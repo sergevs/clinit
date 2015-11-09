@@ -1,0 +1,1674 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings FATAL => qw(uninitialized);
+use Pod::Usage;
+
+my $g_commands;
+
+$g_commands = {
+  start => {
+    action => sub {
+            my $env = shift;
+            $env->current_command('start');
+            $env->clear_affected;
+            foreach my $svc (@_) { $svc->check_and_go('start'); }
+            $env->wait_jobs;
+          },
+    priveleged => 1,
+  },
+  stop => {
+    action => sub {
+            my $env = shift;
+            $env->current_command('stop');
+            $env->clear_affected;
+            foreach my $svc (@_) { $svc->check_and_go('stop'); }
+            $env->wait_jobs;
+          },
+    priveleged => 1,
+  },
+  status => {
+    action => sub {
+            my $env = shift;
+            $env->current_command('status');
+            foreach my $svc (@_) {
+              $svc->status(sub { if (shift != $svc->STARTED && $svc->status_command) { $env->result(1); } }, 1);
+            }
+            $env->wait_jobs;
+          },
+    priveleged => 1,
+  },
+  restart => {
+    action => sub {
+            my $env = shift;
+            $g_commands->{stop}->{action}($env, @_);
+            $g_commands->{start}->{action}($env, @_, $env->affected);
+          },
+    priveleged => 1,
+  },
+  condrestart => {
+    action => sub {
+            my $env = shift;
+            $g_commands->{stop}->{action}($env, @_);
+            $g_commands->{start}->{action}($env, $env->affected);
+          },
+    priveleged => 1,
+  },
+  list => {
+    action => sub {
+            my $env = shift;
+            foreach my $svc (@_) {
+              if ($env->long_list) {
+                $env->log(0, $svc->s_hl($svc->host_id_a) . ' | ' . join (' ', sort keys %{$svc->{groups_}}));
+              } else {
+                $env->log(0, $svc->s_hl($svc->host_id));
+              }
+            }
+          },
+  },
+  grouplist => {
+    action => sub {
+            my $env = shift;
+            foreach my $grp ($env->grp_selected) {
+              $env->log(0, $grp->name);
+              if ($env->long_list) {
+                foreach my $svc (sort {$a->host_id cmp $b->host_id} values %{$grp->services}) {
+                  $env->log(0, "  " .  $svc->s_hl($svc->host_id));
+                }
+              }
+            }
+          },
+  },
+  hostlist => {
+    action => sub {
+            my $env = shift;
+            my %host_hash;
+            foreach my $svc (@_) { $host_hash{$svc->host} = 1; }
+            foreach my $host (sort keys %host_hash) {
+              $env->log(0, $host);
+              if ($env->long_list) {
+                foreach my $svc (sort {$a->host_id cmp $b->host_id} @{$env->{svcs_}->hosts->{$host}}) {
+                  $env->log(0, "  " .  $svc->s_hl($svc->id));
+                }
+              }
+            }
+          },
+  },
+  tree => {
+    action => sub {
+            my $env = shift;
+            foreach my $svc (@_) { print $svc->tree; }
+          },
+  },
+  rtree => {
+    action => sub {
+            my $env = shift;
+            foreach my $svc (@_) { print $svc->tree(1); }
+          },
+  },
+  keyscan => {
+    action => sub {
+            my $env = shift;
+            my %host_hash;
+            foreach my $svc (@_) { $host_hash{$svc->host} = 1; }
+            $env->exec('/usr/bin/ssh-keyscan', '-t', 'rsa,dsa', sort keys %host_hash);
+          },
+  },
+  help => {
+    action => sub {
+            pod2usage(
+              -section => 'SYNOPSIS|COMMANDS',
+              -verbose => 1);
+          },
+  },
+};
+
+$g_commands->{ls} = $g_commands->{list};
+$g_commands->{gl} = $g_commands->{grouplist};
+$g_commands->{hl} = $g_commands->{hostlist};
+
+my $g_env = new Environment($g_commands);
+
+if ($g_env->help) {
+  $g_commands->{help}->{action}($g_env);
+  exit 0;
+}
+
+if (0 == $g_env->commands) {
+  print STDERR "No command\n";
+  $g_env->result(1);
+}
+
+foreach my $cmd ($g_env->commands) {
+  $g_env->log(3, "execute command '$cmd'");
+  $g_env->result(0);
+  $g_commands->{$cmd}->{action}($g_env, $g_env->svc_selected);
+}
+
+exit $g_env->result;
+
+
+package Service;
+
+use strict;
+
+use constant {
+  UNKNOWN  => 0,
+  STOPPED  => 1,
+  STARTING => 2,
+  STARTED  => 3,
+  STOPPING => 4,
+  FAILED   => 5,
+
+  status2str => [ "UNKNOWN", "STOPPED", "STARTING", "STARTED", "STOPPING", "FAILED" ],
+};
+
+sub new
+{
+  my $class = shift;
+  my $env = shift;
+  my $svcs = shift;
+  my %cnf = @_;
+
+  my $svc = bless {
+    env_ => $env,
+    svcs_ => $svcs,
+    id_ => $cnf{id},
+    host_ => $cnf{host},
+    start_command_ => $cnf{start},
+    stop_command_ => $cnf{stop},
+    status_command_ => $cnf{status},
+    standalone_ => 1,
+    user_ => $cnf{user},
+    hidden_ => $cnf{hidden},
+    requires_ => { },
+    required_by_ => { },
+    groups_ => { },
+    last_status_ => UNKNOWN,
+    check_status_callbacks_ => [ ],
+    wait_callbacks_ => [ ],
+    selected_ => 0,
+  } => $class;
+  $svc->standalone($cnf{standalone});
+  return $svc;
+}
+
+sub update {
+  my $svc = shift;
+  my $donor = shift;
+
+  if (defined $donor->{start_command_}) { $svc->{start_command_} = $donor->{start_command_}; }
+  if (defined $donor->{status_command_}) { $svc->{status_command_} = $donor->{status_command_}; }
+  if (defined $donor->{stop_command_}) { $svc->{stop_command_} = $donor->{stop_command_}; }
+  if (defined $donor->{user_}) { $svc->{user_} = $donor->{user_}; }
+  if (defined $donor->{hidden_}) { $svc->{hidden_} = $donor->{hidden_} eq 'true'; }
+  if (defined $donor->{standalone_}) { $svc->standalone($donor->{standalone_}); }
+  return $svc;
+}
+
+sub env { return $_[0]->{env_}; }
+sub svcs { return $_[0]->{svcs_}; }
+sub id { return $_[0]->{id_}; }
+sub host { return $_[0]->{host_}; }
+sub host_id { return $_[0]->{host_}.':'.$_[0]->{id_}; }
+sub start_command { return $_[0]->{start_command_}; }
+sub stop_command { return $_[0]->{stop_command_}; }
+sub status_command { return $_[0]->{status_command_}; }
+sub user { return $_[0]->{user_} || $_[0]->{svcs_}->effective_user; }
+sub groups { return $_[0]->{groups_}; }
+sub hidden { return $_[0]->{hidden_}; }
+
+# returns service's host:id padded by $with to maximum host:id length
+# 'a' means aligned
+sub host_id_a
+{
+  my $svc = shift;
+  my $with = shift || " ";
+  my $id = $svc->host_id;
+
+  for (my $i = length($id); $i < $svc->svcs->max_host_id_length; $i++) {
+    $id .= $with;
+  }
+  return $id;
+}
+
+# 'highlight selected'
+# highlights $what if service is selected
+sub s_hl
+{
+  my $svc = shift;
+  my $what = shift;
+  return ($svc->selected ? $svc->env->hl($what) : $what);
+}
+
+sub selected {
+  my $svc = shift;
+  my $old = $svc->{selected_};
+  if (@_) {
+    $svc->{selected_} = shift;
+  }
+  return $old;
+}
+
+sub standalone {
+  my $svc = shift;
+  my $old = $svc->{standalone_};
+  if (@_) {
+    my $n = shift;
+    if (defined $n) { $svc->{standalone_} = ($n eq 'true' || $n == 1) ? 1 : 0; }
+  }
+  return $old;
+}
+
+sub last_status {
+  my $svc = shift;
+  my $old = $svc->{last_status_};
+  if (@_) {
+    $svc->{last_status_} = shift;
+    if ($old != $svc->{last_status_}) {
+      $svc->env->log(4, $svc->host_id . ": last_status changed ".$svc->status_str($old)."->".$svc->last_status_str);
+    }
+  }
+  return $old;
+}
+
+sub status_str {
+  my $svc = shift;
+  my $status = shift;
+  return status2str->[$status];
+}
+
+sub last_status_str {
+  my $svc = shift;
+  return status2str->[$svc->{last_status_}];
+}
+
+sub match_glob {
+  my ($svc, $glob, $match_hidden) = @_;
+  if ($svc->hidden && !$match_hidden) {
+    return ($svc->host_id eq $glob);
+  }
+  return Text::Glob::match_glob($glob, $svc->host_id);
+}
+
+sub find_required {
+  my $svc = shift;
+  my $s = shift;
+  my @res;
+  push (@res, $svc->host_id);
+  if (defined $svc->{requires_}->{$s->host_id}) {
+    return (@res, $s->host_id);
+  }
+  foreach my $r (values %{$svc->{requires_}}) {
+    my @rres = $r->find_required($s);
+    if (@rres) { return (@res, @rres); }
+  }
+  pop (@res);
+  return @res;
+}
+
+sub requires {
+  my $svc = shift;
+  my %old = %{$svc->{requires_}};
+  foreach my $s (@_) {
+    my @sr = $s->find_required($svc);
+    if (@sr) {
+      print STDERR "Error: Dependency loop detected: " . join('->',$svc->host_id,@sr) . "\n";
+      exit 1;
+    }
+    $svc->{requires_}->{$s->host_id} = $s;
+    $s->{required_by_}->{$svc->host_id} = $svc;
+  }
+  return values %old;
+}
+
+sub required_by {
+  my $svc = shift;
+  my %old = %{$svc->{required_by_}};
+  foreach my $s (@_) {
+    my @sr = $svc->find_required($s);
+    if (@sr) {
+      print STDERR "Error: Dependency loop detected: " . join('->',$s->host_id,@sr) . "\n";
+      exit 1;
+    }
+    $svc->{required_by_}->{$s->host_id} = $s;
+    $s->{requires_}->{$svc->host_id} = $svc;
+  }
+  return values %old;
+}
+
+sub add_group
+{
+  my $svc = shift;
+  my $grp = shift;
+  if (!defined $svc->{groups_}->{$grp->name})
+  {
+    $svc->{groups_}->{$grp->name} = $grp;
+  }
+}
+
+sub cmd2go
+{
+  my $svc = shift;
+  my $cmd = shift;
+  my $cmd2go = {
+    start => {
+      dst_status => STARTED,
+      src_status => STOPPED,
+      trn_status => STARTING,
+      already    => $svc->env->started_str,
+      v_ing      => "starting",
+      v_ed       => "started",
+      dep        => "required by",
+    },
+    stop => {
+      dst_status => STOPPED,
+      src_status => STARTED,
+      trn_status => STOPPING,
+      already    => $svc->env->stopped_str,
+      v_ing      => "stopping",
+      v_ed       => "stopped",
+      dep        => "requires",
+    },
+  };
+  if (!defined $cmd2go->{$cmd}) { $svc->env->int_error('Service::cmd2go: unsupported command '.$cmd); }
+  return $cmd2go->{$cmd};
+}
+
+sub status
+{
+  my $svc = shift;
+  my $callback = shift || sub { };
+  my $verbose = defined $_[0] ? $_[0] : 3;
+  if ($svc->last_status != UNKNOWN) {
+    &$callback($svc->last_status);
+  } else {
+    $svc->check_status(sub {
+      my $status = shift;
+      if ($svc->last_status == UNKNOWN) {
+        $svc->last_status($status);
+      } else {
+        $svc->env->log(5, $svc->host_id . " last_status changed to ".$svc->last_status_str." before Service::status() callback executed");
+      }
+      &$callback($svc->last_status);
+    }, $verbose);
+  }
+}
+
+sub check_status
+{
+  my $svc = shift;
+  my $callback = shift || sub { };
+  my $verbose = defined $_[0] ? $_[0] : 3;
+  push(@{$svc->{check_status_callbacks_}}, $callback);
+  if (@{$svc->{check_status_callbacks_}} > 1) {
+    return;
+  }
+
+  sub check_status_done_
+  {
+    my $svc = shift;
+    my $res = shift;
+
+    my @clist = @{$svc->{check_status_callbacks_}};
+    $svc->{check_status_callbacks_} = [ ];
+    foreach my $c (@clist) { &$c($res); }
+  }
+
+  my $env = $svc->env;
+  $env->log(3, 'checking status of ' . $svc->host_id);
+  if ($svc->status_command) {
+    $env->job( sub {
+      return $env->remote_exec($svc->host, $svc->status_command);
+    }, sub {
+      my $exit_code = shift;
+      if ($env->dry_run) {
+        if ($svc->last_status == UNKNOWN && $env->current_command ne 'stop' ||
+            $svc->last_status == STOPPING) {
+          $exit_code = 1;
+        }
+      }
+      my $res = $exit_code == 0 ? STARTED : ($exit_code == 255 ? FAILED : STOPPED);
+      if ($exit_code == 255) {
+        $env->log(1, $svc->s_hl($svc->host_id_a) . ' ' . $env->failed_str . ' to get status');
+        $env->error;
+      } else {
+        $env->log($verbose, $svc->s_hl($svc->host_id_a) . " is " . ( $exit_code == 0 ? $env->started_str : $env->stopped_str ));
+      }
+      check_status_done_($svc, $res);
+    }, $svc->s_hl($svc->host_id_a) . ': ' );
+  } else {
+    check_status_done_($svc, $svc->last_status);
+  }
+}
+
+sub wait_
+{
+  my $svc = shift;
+  my $count = shift || 0;
+  my $env = $svc->env;
+  if ($svc->last_status != STARTING && $svc->last_status != STOPPING) {
+    $env->int_error('Service::wait_: waiting service ' . $svc->host_id . ' with status ' . $svc->last_status_str);
+    return;
+  }
+
+  sub wait_done_
+  {
+    my $svc = shift;
+    my $status = shift;
+    my $env = $svc->env;
+
+    $env->log(1, $svc->s_hl($svc->host_id_a) . ' ' . ($status == STARTED ? $env->started_str : $env->stopped_str));
+    $svc->last_status($status);
+    $env->push_affected($svc);
+    my @clist = @{$svc->{wait_callbacks_}};
+    $svc->{wait_callbacks_} = [ ];
+    foreach my $c (@clist) { &$c(); }
+  }
+
+  if ($env->probe_count == 0 || !$svc->status_command) {
+    my $status = $svc->last_status == STARTING ? STARTED : STOPPED;
+    wait_done_($svc, $status);
+    return;
+  }
+
+  if ($count >= $env->probe_count) {
+    $svc->last_status(FAILED);
+    $env->log(1, $svc->s_hl($svc->host_id_a) . ' ' . $env->hle('timed out'));
+    $env->error;
+    return;
+  }
+
+  $svc->check_status(sub {
+    my $status = shift;
+    if ($status == FAILED) {
+      $svc->last_status(FAILED);
+      return;
+    }
+    if ($svc->last_status == STARTING && $status == STARTED ||
+        $svc->last_status == STOPPING && $status == STOPPED) {
+      wait_done_($svc, $status);
+      return;
+    }
+    if ($count > 2) {
+      $env->log(1, $svc->s_hl($svc->host_id_a) . $env->hlw(' waiting...'));
+    }
+    $env->log(3, $svc->host_id . " probe #$count");
+    $env->job ( sub {
+      sleep($env->probe_delay); return 0;
+    }, sub {
+      $svc->wait_($count + 1);
+    }, $svc->s_hl($svc->host_id_a) . ': ' );
+  } );
+}
+
+sub wait
+{
+  my $svc = shift;
+  my $callback = shift || sub { };
+  if ($svc->last_status != STARTING && $svc->last_status != STOPPING) {
+    $svc->env->int_error('Service::wait: waiting service ' . $svc->host_id . ' with status ' . $svc->last_status_str);
+    return;
+  }
+
+  push(@{$svc->{wait_callbacks_}}, $callback);
+  if (@{$svc->{wait_callbacks_}} == 1) {
+    $svc->wait_(0);
+  }
+}
+
+sub go
+{
+  my $svc = shift;
+  my $cmd = shift;
+  my $callback = shift || sub { };
+  my $go = $svc->cmd2go($cmd);
+  my $env = $svc->env;
+  if ($svc->last_status == $go->{trn_status}) {
+    $env->log(4, $svc->host_id . " is ".$go->{v_ing}.", join to other ".$cmd." waiters");
+    push(@{$svc->{wait_callbacks_}}, $callback);
+    return;
+  }
+  if ($svc->last_status == $go->{dst_status}) {
+    $env->log(2, $svc->s_hl($svc->host_id_a)." already ".$go->{already});
+    &$callback($svc->last_status);
+    return;
+  }
+  if ($svc->last_status != UNKNOWN && $svc->last_status != $go->{src_status}) {
+    $env->int_error('Service::go: cannot '.$cmd.' ' . $svc->host_id . ' from ' . $svc->last_status_str);
+    return;
+  }
+  if (!$svc->{$cmd."_command_"}) {
+    $svc->last_status($go->{dst_status});
+    &$callback($svc->last_status);
+    return;
+  }
+  $env->log(3, $go->{v_ing}.' ' . $svc->host_id);
+  $svc->last_status($go->{trn_status});
+  push(@{$svc->{wait_callbacks_}}, $callback);
+  $env->job( sub {
+    return $env->remote_exec($svc->host, $svc->{$cmd."_command_"});
+  }, sub {
+    my $exit_code = shift;
+    if ($exit_code != 0) {
+      $svc->last_status(FAILED);
+      $env->log(1, $svc->s_hl($svc->host_id_a) . ' '.$cmd.' command '.$env->failed_str.' with status: ' . $exit_code);
+      $env->error;
+    } else {
+      $env->log(4, $svc->host_id . " ".$cmd." command exitted with code $exit_code, checking the status");
+      $svc->wait_(0);
+    }
+  }, $svc->s_hl($svc->host_id_a) . ': ' );
+}
+
+sub check_and_go
+{
+  my $svc = shift;
+  my $cmd = shift;
+  my $callback = shift || sub { };
+  my $level = shift || 1;
+  my $env = $svc->env;
+  if ($env->main_pid != $$) { $env->int_error('Service::check_and_go() cannot work as job'); }
+  my $id = $svc->host_id;
+  my $rsvc;
+  my $go = $svc->cmd2go($cmd);
+  my @prereq = $cmd eq 'start' ? $svc->requires : $svc->required_by;
+
+  if ($level == 1 && ($svc->last_status == $go->{dst_status} || !$svc->standalone)) {
+    return;
+  }
+
+  $env->log(3, "check and $cmd $id");
+  $svc->status(sub {
+    my $status = shift;
+    if ($status == $go->{trn_status}) {
+      $env->log(4, "$id status is ".$svc->status_str($status).", waiting...");
+      $svc->wait($callback);
+      return;
+    }
+
+    if ($status == $go->{dst_status}) {
+      $env->log($level == 1 ? 1 : 2, $svc->s_hl($svc->host_id_a)." already ".$go->{already});
+      if ($env->force_deps) {
+        foreach $rsvc (@prereq) {
+          if ($rsvc->selected || $env->dep($svc, $rsvc)->strong) {
+            $rsvc->check_and_go($cmd, 0, $level + 1);
+          }
+        }
+      }
+      &$callback();
+      return;
+    }
+
+    if ($status == $go->{src_status} || $status == $svc->UNKNOWN) {
+      my $req_count = @prereq;
+      if ($env->no_deps) { $req_count = 0; }
+      if ($req_count) {
+        $env->log(4, "check'n'".$go->{v_ing}." $req_count service(s), ".$go->{dep}." $id");
+        foreach $rsvc (@prereq) {
+          if ($rsvc->selected || ($env->dep($svc, $rsvc)->strong && !$env->selected_deps)) {
+            $rsvc->check_and_go($cmd, sub {
+              $req_count--;
+              $env->log(4, $rsvc->host_id . " (".$go->{dep}." $id) check'n'".$go->{v_ed}.", the rest is $req_count");
+              if ($req_count == 0) { $svc->go($cmd, $callback); }
+            }, $level + 1);
+          } else { $req_count--; }
+        }
+      }
+      if ($req_count == 0) { $svc->go($cmd, $callback); }
+    }
+  } );
+}
+
+sub tree
+{
+  my $svc = shift;
+  my $reverse = shift || 0;
+  my $level = shift || 0;
+  my $indent = shift || "";
+  my $env = $svc->env;
+
+  my @r = $reverse ? $svc->required_by : $svc->requires;
+  my @r1 = $reverse ? $svc->requires : $svc->required_by;
+  if ($level == 0 && @r1 > 0) {
+    return "";
+  }
+
+  @r = sort {$a->host_id cmp $b->host_id} @r;
+
+  my $s = $svc->host_id;
+  my $s_ = $s;
+  $s_ =~ s/./ /g;
+  $indent .= $s_;
+  if ($svc->selected) { $s = $env->hl($s); }
+
+  if (@r > 0) {
+    $s .= '─' . (@r > 1 ? '┬' : '─');
+    $indent .= ' ';
+    $s .= ($env->dep($svc, $r[0])->strong ? '─' : '-');
+    $s .= $r[0]->tree($reverse, $level + 1, $indent . (@r > 1 ? '│ ' : '  '));
+    for(my $i = 1; $i < @r; $i++) {
+      $s .= $indent . ($i + 1 == @r ? '└' : '├' ) . ($env->dep($svc, $r[$i])->strong ? '─' : '-') .
+        $r[$i]->tree($reverse, $level + 1, $indent . ($i + 1 == @r ? '  ' : '│ ' ));
+    }
+  } else {
+    $s .= "\n";
+  }
+  return $s;
+}
+
+1;
+
+package Group;
+use strict;
+use Text::Glob;
+
+sub new
+{
+  my $class = shift;
+  my %cnf = @_;
+
+  my $grp = bless {
+    name_ => $cnf{name},
+    services_ => { },
+    hidden_ => $cnf{hidden},
+    selected_ => 0,
+  } => $class;
+  return $grp;
+}
+
+sub name { return $_[0]->{name_}; }
+sub services { return $_[0]->{services_}; }
+sub hidden { return $_[0]->{hidden_}; }
+sub add_service
+{
+  my $grp = shift;
+
+  foreach my $svc (@_) {
+    if (!defined $grp->{services_}->{$svc->host_id})
+    {
+      $grp->{services_}->{$svc->host_id} = $svc;
+      $svc->add_group($grp);
+    }
+  }
+}
+
+sub selected {
+  my $grp = shift;
+  my $old = $grp->{selected_};
+  if (@_) {
+    $grp->{selected_} = shift;
+  }
+  return $old;
+}
+
+sub match_glob {
+  my ($grp, $glob, $match_hidden) = @_;
+  if ($grp->hidden && !$match_hidden) {
+    return $grp->name eq $glob;
+  }
+  return Text::Glob::match_glob($glob, $grp->name);
+}
+
+1;
+
+package Services;
+
+use strict;
+use XML::Parser;
+use Text::Glob;
+
+sub new
+{
+  my $class = shift;
+  my $env = shift;
+  my $services_xml = shift;
+
+  die "Error: '$services_xml' not found\n"
+    unless -f $services_xml;
+
+  my $p = XML::Parser->new(Style => 'Tree');
+  my $services_tree = $p->parsefile($services_xml);
+  die "<services> root node expected in services.xml ('$services_tree->[0]' found)\n"
+    unless $services_tree->[0] eq "services";
+
+  my $services = new XMLNode($services_tree);
+
+  my $svcs = bless {
+    env_ => $env,
+    effective_user_ => $services->attr->{effective_user},
+    effective_group_ => "",
+    ssh_key_ => $services->attr->{ssh_key},
+    services_ => { },
+    deps_ => { },
+    groups_ => { },
+    hosts_ => { },
+    max_host_id_length_ => 0,
+  } => $class;
+
+  foreach my $c ($services->children) {
+    if ($c->name eq "service") {
+      my $svc = $svcs->add_service(%{$c->attr});
+      foreach my $r ($c->children) {
+        if ($r->name eq "requires") {
+          my $dep = new Dependency($svc, $svcs->add_service(%{$r->attr}), $r->attr->{strong});
+          $svcs->{deps_}->{$dep->id} = $dep;
+        }
+      }
+    }
+    if($c->name eq "group") {
+      my $grp = $svcs->add_group(%{$c->attr});
+      foreach my $s ($c->children) {
+        if($s->name eq "service") {
+          $grp->add_service( $svcs->add_service(%{$s->attr}) );
+        }
+      }
+    }
+  }
+
+  # create default group 'all' if it is not declared in services.xml
+  if (!defined $svcs->groups->{all}) {
+    $svcs->add_group(name => 'all')->add_service( values %{$svcs->services} );
+  }
+
+  return $svcs;
+}
+
+sub env { return $_[0]->{env_}; }
+sub effective_user { return $_[0]->{effective_user_} || $ENV{USER}; }
+sub ssh_key { return $_[0]->{ssh_key_}; }
+sub services { return $_[0]->{services_}; }
+sub deps { return $_[0]->{deps_}; }
+sub groups { return $_[0]->{groups_}; }
+sub hosts { return $_[0]->{hosts_}; }
+sub max_host_id_length { return $_[0]->{max_host_id_length_}; }
+
+sub add_service
+{
+  my $svcs = shift;
+  my $services = $svcs->services;
+  my $svc = new Service($svcs->env, $svcs, @_);
+  if(defined $services->{$svc->host_id}) {
+    $svc = $services->{$svc->host_id}->update($svc);
+  } else {
+    $services->{$svc->host_id} = $svc;
+    push(@{$svcs->hosts->{$svc->host}}, $svc);
+  }
+  if (length($svc->host_id) > $svcs->{max_host_id_length_}) {
+    $svcs->{max_host_id_length_} = length($svc->host_id);
+  }
+  return $svc;
+}
+
+sub add_group
+{
+  my $svcs = shift;
+  my $groups = $svcs->{groups_};
+  my $grp = new Group(@_);
+
+  if(defined $groups->{$grp->name}) {
+    $grp = $groups->{$grp->name};
+  } else {
+    $groups->{$grp->name} = $grp;
+  }
+  return $grp;
+}
+
+1;
+
+package Environment;
+
+use strict;
+use File::Basename;
+use Getopt::Long;
+
+sub new
+{
+  my $class = shift;
+  my $commands = shift;
+  my @argv = @ARGV;
+  my $term = $ENV{TERM} || "";
+
+  my $opt = {
+    services_xml => dirname($0) . "/services.xml",
+    jobs => 8,
+    verbose => 1,
+    match_hidden => 0,
+    long_list => 0,
+    quiet => 0,
+    dry_run => 0,
+    no_deps => 0,
+    force_deps => 0,
+    selected_deps => 0,
+    keep_going => 0,
+    probe_count => 10,
+    probe_delay => 3,
+    colors => ($term =~ m/^(xterm|screen|cygwin|rxvt)/ ? 1 : 0),
+    no_remote => [""],
+    help => 0,
+  };
+
+  Getopt::Long::Configure (qw(bundling pass_through));
+
+  Getopt::Long::GetOptions(
+    'services|S=s'    => \$opt->{services_xml},
+    'verbose|v+'      => \$opt->{verbose},
+    'all|a'           => \$opt->{match_hidden},
+    'long-list|l'     => \$opt->{long_list},
+    'quiet|q'         => \$opt->{quiet},
+    'dry-run|n'       => \$opt->{dry_run},
+    'no-deps|nodeps'  => \$opt->{no_deps},
+    'force-deps'      => \$opt->{force_deps},
+    'selected-deps'   => \$opt->{selected_deps},
+    'no-remote=s'     =>  $opt->{no_remote},
+    'keep-going|k'    => \$opt->{keep_going},
+    'probe-count|p=i' => \$opt->{probe_count},
+    'probe-delay=i'   => \$opt->{probe_delay},
+    'jobs|j=i'        => \$opt->{jobs},
+    'colors!'         => \$opt->{colors},
+    'help|h'          => \$opt->{help},
+  );
+  @{$opt->{no_remote}} = split (/ |,/, join(',', @{$opt->{no_remote}}));
+  if (!-t STDOUT) { $opt->{colors} = 0; }
+
+  my $env = bless {
+    ssh_opt_ => [ ],
+    opt_ => $opt,
+    commands_ => [ ],
+    current_command_ => '',
+    selectors_ => [ ],
+    svc_selected_ => [ ],
+    grp_selected_ => [ ],
+    affected_ => [ ],
+    jobs_ => { },
+    signalled_jobs_ => 0,
+    read_fd_set_ => "",
+    pipes_ => { },
+    main_pid_ => $$,
+    result_ => 0,
+    terminated_ => 0,
+  } => $class;
+
+  foreach my $arg (@ARGV) {
+    if ($arg =~ m/^-/) {
+      print STDERR "Error: unknown option '$arg'\n";
+      $env->result(1);
+    }
+  }
+
+  if ($env->help) {
+    $g_commands->{help}->{action}($g_env);
+    exit 0;
+  }
+
+  if ($opt->{dry_run} && !$opt->{verbose}) {
+    $opt->{verbose} = 1;
+  }
+
+  if ($opt->{quiet}) { $opt->{verbose} = 0; }
+
+  my $svcs = new Services($env, $opt->{services_xml});
+  $env->{svcs_} = $svcs;
+
+  if ($svcs->ssh_key && $svcs->ssh_key ne "-") {
+    push(@{$env->{ssh_opt_}}, '-i', $svcs->ssh_key);
+  }
+  push(@{$env->{ssh_opt_}}, '-o', 'BatchMode yes');
+
+  my $priveleged_command = 0;
+
+  # parse the rest command-line arguments
+  foreach my $arg (@ARGV) {
+    if ($arg =~ m/^([^:]*):(.*?)([+-]?)$/) {
+      if (!$env->add_selector(($1 ? $1 : '*') . ':' . ($2 ? $2 : '*'), $3 eq '-')) {
+        print STDERR "Error: nothing matched '$arg'\n";
+        $env->result(1);
+      }
+    } elsif ($arg =~ m/^-/) {
+    } elsif (defined $commands->{$arg}) {
+      if ($commands->{$arg}->{priveleged}) { $priveleged_command = $arg; }
+      push(@{$env->{commands_}}, $arg);
+    } elsif ($arg =~ m/^(.*?)([+-]?)$/) {
+      if (!$env->add_selector($1, $2 eq '-')) {
+        print STDERR "Error: unknown command or group selector '$arg'\n";
+        $env->result(1);
+      }
+    }
+  }
+
+  if ($env->result != 0) {
+    exit $env->result;
+  }
+
+  if ($priveleged_command && !$env->dry_run) {
+    my $effective_user = $svcs->effective_user;
+    my @eui = getpwnam($effective_user);
+    if (@eui == 0) {
+      print STDERR "Error: failed to get uid for '$effective_user'\n";
+      exit 1;
+    }
+
+    if ($> != $eui[2]) {
+      exec '/usr/bin/sudo', '-u', $effective_user, '-p', 'sudo requires %p@%h\'s password to run "'.$0.' '.$priveleged_command.'" as %U: ', $0, @argv;
+      exit 1;
+    }
+  }
+
+  if (0 == $env->grp_selected) {
+    if ($env->svc_selected) {
+      foreach my $svc ($env->svc_selected) {
+        $env->select(0, sort {$a->name cmp $b->name} values %{$svc->groups})
+      }
+    } else {
+      $env->select(0, sort {$a->name cmp $b->name} values %{$svcs->groups});
+    }
+  }
+
+  # add services from 'all' group if nothing selected
+  if (0 == $env->svc_selected) {
+    $env->select(sort {$a->host_id cmp $b->host_id} values %{$svcs->groups->{all}->services});
+  }
+
+  if ($env->jobs) {
+    $SIG{CHLD} = sub { $env->{signalled_jobs_}++; };
+    $SIG{INT} = sub {
+      $env->{terminated_}++;
+      print STDERR "Terminated by user.\n";
+      if (scalar(keys %{$env->{jobs_}})) {
+        if ($env->{terminated_} == 1) {
+          print STDERR "Waiting for " . scalar(keys %{$env->{jobs_}}) . " job(s)\n";
+        } elsif ($env->{terminated_} == 2) {
+          print STDERR "Interrupt " . scalar(keys %{$env->{jobs_}}) . " job(s)\n";
+          kill 2, keys %{$env->{jobs_}};
+        } elsif ($env->{terminated_} == 3) {
+          print STDERR "Kill " . scalar(keys %{$env->{jobs_}}) . " job(s)\n";
+          kill 9, keys %{$env->{jobs_}};
+        }
+      }
+      if ($env->{terminated_} > 3) {
+        print STDERR "Giving up..\n";
+        exit 2;
+      }
+    };
+  }
+  return $env;
+}
+
+sub help { return $_[0]->{opt_}->{help}; }
+sub verbose { return $_[0]->{opt_}->{verbose}; }
+sub match_hidden { return $_[0]->{opt_}->{match_hidden}; }
+sub long_list { return $_[0]->{opt_}->{long_list}; }
+sub dry_run { return $_[0]->{opt_}->{dry_run}; }
+sub no_deps { return $_[0]->{opt_}->{no_deps}; }
+sub force_deps { return $_[0]->{opt_}->{force_deps}; }
+sub selected_deps { return $_[0]->{opt_}->{selected_deps}; }
+sub probe_count { return $_[0]->dry_run ? 1 : $_[0]->{opt_}->{probe_count}; }
+sub probe_delay { return $_[0]->dry_run ? 0 : $_[0]->{opt_}->{probe_delay}; }
+sub jobs { return $_[0]->{opt_}->{jobs}; }
+sub keep_going { return $_[0]->{opt_}->{keep_going}; }
+sub colors { return $_[0]->{opt_}->{colors} != 0; }
+sub main_pid { return $_[0]->{main_pid_}; }
+sub no_remote {
+  if ($_[1] eq "") { return 1; }
+  foreach my $h (@{ $_[0]->{opt_}->{no_remote}}) {
+    if ($h eq $_[1]) { return 1; }
+  }
+  return 0;
+}
+
+sub commands { return @{$_[0]->{commands_}}; }
+sub svc_selected { return @{$_[0]->{svc_selected_}}; }
+sub grp_selected { return @{$_[0]->{grp_selected_}}; }
+sub affected { return @{$_[0]->{affected_}}; }
+
+sub clear_affected { @{$_[0]->{affected_}} = ( ); }
+sub push_affected
+{
+  my $env = shift;
+  push(@{$env->{affected_}}, @_);
+}
+
+sub current_command
+{
+  my $env = shift;
+  my $old = $env->{current_command_};
+  if (@_) { $env->{current_command_} = shift; }
+  return $old;
+}
+
+sub result
+{
+  my $env = shift;
+  my $old = $env->{result_};
+  if (@_) { $env->{result_} = shift; }
+  return $old;
+}
+
+sub hl
+{
+  my $env = shift;
+  my $t = shift;
+  my $color = shift || "38";
+  if ( $env->colors ) {
+    $t = "\e[1;${color}m".$t."\e[0;39m";
+  }
+  return $t;
+}
+
+sub hls { return $_[0]->hl($_[1], "32"); }
+sub hlw { return $_[0]->hl($_[1], "33"); }
+sub hle { return $_[0]->hl($_[1], "31"); }
+
+sub failed_str  { return $_[0]->hle('failed'); }
+sub started_str { return $_[0]->hls('started'); }
+sub stopped_str { return $_[0]->hlw('stopped'); }
+
+sub add_selector
+{
+  my $env = shift;
+  my $selector = shift;
+  my $deselect = shift;
+  my $nmatched = 0;
+  my $gmatched = 0;
+  foreach my $svc (sort {$a->host_id cmp $b->host_id} values %{$env->{svcs_}->services}) {
+    if ($svc->match_glob($selector, $env->match_hidden)) {
+      $nmatched++;
+      $deselect ? $env->deselect($svc) : $env->select($svc);
+    }
+  }
+  foreach my $grp (sort {$a->name cmp $b->name} values %{$env->{svcs_}->groups}) {
+    if ($grp->match_glob($selector, $env->match_hidden)) {
+      $gmatched++;
+      $deselect ? $env->deselect($grp) : $env->select($grp);
+    }
+  }
+  if ($nmatched || $gmatched) { push(@{$env->{selectors_}}, $selector); }
+  return $nmatched || $gmatched;
+}
+
+sub select
+{
+  my $env = shift;
+  my $with_services = 1;
+  for my $t (@_) {
+    if (ref($t) eq "Service") {
+      if (!$t->selected) {
+        $t->selected(1);
+        push(@{$env->{svc_selected_}}, $t);
+      }
+    } elsif (ref($t) eq "Group") {
+      if (!$t->selected) {
+        $t->selected(1);
+        push(@{$env->{grp_selected_}}, $t);
+      }
+      if ($with_services) {
+        $env->select(sort {$a->host_id cmp $b->host_id} values %{$t->services});
+      }
+    } else {
+      $with_services = $t;
+    }
+  }
+}
+
+sub deselect
+{
+  my $env = shift;
+  my $with_services = 1;
+  for my $t (@_) {
+    if (ref($t) eq "Service") {
+      if ($t->selected) {
+        $t->selected(0);
+        for(my $i = 0; $i < scalar(@{$env->{svc_selected_}}); $i++) {
+          if ($env->{svc_selected_}->[$i] == $t) {
+            splice(@{$env->{svc_selected_}}, $i, 1);
+            last;
+          }
+        }
+      }
+    } elsif (ref($t) eq "Group") {
+      if ($t->selected) {
+        $t->selected(0);
+        for(my $i = 0; $i < scalar(@{$env->{grp_selected_}}); $i++) {
+          if ($env->{grp_selected_}->[$i] == $t) {
+            splice(@{$env->{grp_selected_}}, $i, 1);
+            last;
+          }
+        }
+      }
+      if ($with_services) {
+        $env->deselect(sort {$a->host_id cmp $b->host_id} values %{$t->services});
+      }
+    } else {
+      $with_services = $t;
+    }
+  }
+}
+
+sub dep
+{
+  my $env = shift;
+  my $id1 = Dependency::id($_[0], $_[1]);
+  my $id2 = Dependency::id($_[1], $_[0]);
+  return $env->{svcs_}->{deps_}->{$id1} || $env->{svcs_}->{deps_}->{$id2};
+}
+
+sub log
+{
+  my $env = shift;
+  my $level = shift;
+  my $prefix = "";
+  if ($env->verbose > 3) {
+    $prefix .= sprintf('[%5d] (%d) ', $$, $level);
+  }
+
+  if ($level <= $env->verbose) {
+    print join("", $prefix, @_, "\n");
+  }
+}
+
+sub error
+{
+  my $env = shift;
+  my $prefix = $env->verbose > 3 ? sprintf('[%5d] ',$$) : '';
+
+  if (@_) {
+    print STDERR $prefix . $env->hle("Error").": " . join("", @_, "\n");
+  }
+  $env->result(1);
+  if (!$env->keep_going) {
+    if ($env->main_pid == $$) { $env->wait_jobs; }
+    exit 255;
+  }
+}
+
+sub int_error
+{
+  my $env = shift;
+  my $prefix = $env->verbose > 3 ? sprintf('[%5d] ',$$) : '';
+
+  print STDERR $prefix . $env->hle("Internal error").": " . join("", @_, "\n");
+  $env->result(1);
+  $env->wait_jobs;
+  exit 255;
+}
+
+sub join_args
+{
+  my $res = "";
+  while (@_) {
+    my $arg = shift;
+    if (length($arg) == 0 || $arg =~ m/[ \\"\$]/) {
+      $arg =~ s/([\\"\$])/\\$1/g;
+      $arg = '"' . $arg . '"';
+    }
+
+    $res .= ($res eq "" ? "" : " ") . $arg;
+  }
+  return $res;
+}
+
+sub exec
+{
+  my $env = shift;
+  my @args = (@_);
+
+  $env->log(2, "exec: " . join_args(@args));
+
+  my $res = 0;
+  if (!$env->dry_run) {
+    $res = system @args;
+  }
+
+  my $status = $res >> 8;
+
+  $env->log(6, "exec: result $res ".sprintf('(%08x)',$res).", status $status",
+      ($env->verbose > 3 ? " (". ($res >> 8) . " << 8) | (" . (($res >> 7) & 1). " << 7) | " . ($res & 127) : ""));
+
+  my $error_ctx="; command: ".join_args(@args);
+  if ($res == -1) {
+    $env->error("system() call ".$env->failed_str.": $!".$error_ctx);
+    return 255;
+  }
+
+  if ($res & 127) {
+    my $core_dumped = ($res & 128) ? "(core dumped)" : "";
+    $env->error(basename($_[0])." ".$env->hle("died")." with signal " . ($res & 127) . " $core_dumped".$error_ctx);
+  }
+  return $res;
+}
+
+sub remote_exec
+{
+  my $env = shift;
+  my $host = shift;
+  my $command = shift;
+
+  if ($env->no_remote($host)) {
+    my $res = $env->exec($command);
+    my $status = $res >> 8;
+
+    if ($res & 127) { return 255; }
+
+    return $status;
+  }
+  my @args = ('/usr/bin/ssh', @{$env->{ssh_opt_}}, $host, $command);
+  my $res = $env->exec(@args);
+  my $status = $res >> 8;
+
+  if ($res & 127) { return 255; }
+
+  if ($status == 255) {
+    $env->error($env->hle("ssh failed")."; command: ".join_args(@args));
+  }
+
+  return $status;
+}
+
+sub on_pipe_data
+{
+  my ($p, $data) = @_;
+  my $f = $p->{orig};
+  $p->{buf} .= $data;
+  my $nl = 0;
+  for($nl = 0; $nl < length($p->{buf}); $nl++) {
+    if (substr($p->{buf}, $nl, 1) eq "\n") {
+      print $f $p->{prefix} . substr($p->{buf}, 0, $nl) . "\n";
+      $p->{buf} = substr($p->{buf}, $nl + 1, length($p->{buf}) - $nl - 1);
+      $nl = -1;
+    }
+  }
+  if (!$data && $p->{buf}) {
+    print $f $p->{prefix} . $p->{buf} . "\n";
+    $p->{buf} = "";
+  }
+}
+
+sub wait_job
+{
+  my $env = shift;
+
+  while (keys %{$env->{pipes_}}) {
+    my $read_fd_set = $env->{read_fd_set_};
+    my $bytes_read = 0;
+    my $interrupted = 0;
+    my $rn = CORE::select($read_fd_set, undef, undef, 100); # hope this will unblock by SIGCHLD
+    if ($rn > 0) {
+      foreach my $d (values %{$env->{pipes_}}) {
+        if (vec($read_fd_set, fileno($d->{rd}), 1)) {
+          my $buf;
+          while (1) {
+            my $n = sysread($d->{rd}, $buf, 1024);
+            if (!defined $n) {
+              $interrupted = 1;
+              last;
+            }
+            $bytes_read += $n;
+            if ($n > 0) { on_pipe_data($d, $buf); }
+            if ($n < 1024) { last; }
+          }
+        }
+      }
+    }
+    if ($env->{signalled_jobs_}) { last; }
+    if ($bytes_read == 0 && $interrupted == 0) { last; }
+  }
+
+  my $pid;
+  while (1) {
+    $pid = wait;
+    if ($pid == -1) { # either ECHILD or EINTR
+      if ($! == 10) { # ECHILD
+        $env->{signalled_jobs_} = 0; # cleanup signalled child count
+        return $pid;
+      }
+    } else { last; }
+    # or try again
+  }
+
+  if ($env->{signalled_jobs_} > 0) { $env->{signalled_jobs_}--; }
+  
+  if (defined $env->{jobs_}->{$pid}) {
+    my $j = delete $env->{jobs_}->{$pid};
+    my $wait_status = $?;
+    my $job_status = $wait_status >> 8;
+    $env->close_job_pipes(@{$j->{pipes}});
+    $env->log(5, "job $pid exitted with status $wait_status/$job_status");
+    if ($wait_status & 127) {
+      my $core_dumped = ($wait_status & 128) ? "(core dumped)" : "";
+      $env->error("job $pid ".$env->hle("died")." with signal " . ($wait_status & 127) . " $core_dumped");
+      $job_status = 255;
+    } elsif ($job_status == 255) {
+      $env->error;
+    }
+    $j->{status} = $job_status;
+    if (defined $j->{callback} && $j->{callback}) {
+      $env->log(5, "call job $pid post action with ". $j->{status} ." value");
+      $j->{callback}($j->{status});
+    }
+  }
+  return $pid;
+}
+
+sub wait_jobs
+{
+  my $env = shift;
+  while($env->wait_job != -1) { };
+}
+
+sub create_job_pipes
+{
+  my $env = shift;
+  my $prefix = shift;
+  my @res;
+  foreach my $orig (*STDOUT, *STDERR) {
+    if (!$orig) { next; }
+    my ($rd, $wr);
+    pipe($rd, $wr);
+    vec($env->{read_fd_set_}, fileno($rd), 1) = 1;
+    my $p = { rd => $rd, wr => $wr, orig => $orig, buf => "", prefix => $prefix, };
+    $env->{pipes_}->{fileno($rd)} = $p;
+    push(@res, $p);
+  }
+  return @res;
+}
+
+sub duplicate_job_pipes
+{
+  my $env = shift;
+  foreach my $p (@_) {
+    my($rd, $wr, $orig) = ($p->{rd}, $p->{wr}, $p->{orig});
+    open($orig, ">&", $wr) or die "Can't dup: $!";
+    close $rd;
+    $p->{rd} = 0;
+  }
+}
+
+sub close_job_pipes
+{
+  my $env = shift;
+  foreach my $p (@_) {
+    my $rd = $p->{rd};
+    vec($env->{read_fd_set_}, fileno($rd), 1) = 0;
+    my $d = delete $env->{pipes_}->{fileno($rd)};
+
+    my $rin = '';
+    vec($rin, fileno($rd), 1) = 1;
+    my $n = CORE::select($rin, undef, undef, 0);
+    if ($n) {
+      my $buf;
+      while (1) {
+        my $n = sysread($rd, $buf, 1024) || 0;
+        if ($n) { on_pipe_data($d, $buf); }
+        last if ($n < 1024);
+      }
+    }
+
+    on_pipe_data($d, "");
+    close $rd;
+    $d->{rd} = 0;
+  }
+}
+
+sub job
+{
+  my $env = shift;
+  my $job = {
+    action => shift,
+    callback => shift,
+    status => 0,
+    prefix => shift,
+    pipes => [],
+  };
+
+  if ($env->jobs > 0) {
+    if ($env->{terminated_}) { return; }
+
+    while ($env->jobs < (keys %{$env->{jobs_}})) {
+      $env->log(4, "job slot full. waiting for complete");
+      $env->wait_job;
+      if ($env->{terminated_}) { return; }
+    }
+
+    push(@{$job->{pipes}}, $env->create_job_pipes($job->{prefix}));
+
+    my $pid = fork();
+    if ($pid == 0) {
+      $env->duplicate_job_pipes(@{$job->{pipes}});
+      $env->log(5, "job $$ started");
+      my $res = $job->{action}() || 0;
+      $env->log(5, "job $$ finished with $res code");
+      exit $res;
+    } else {
+      foreach my $p (@{$job->{pipes}}) { close $p->{wr}; $p->{wr} = 0; }
+      $env->{jobs_}->{$pid} = $job;
+    }
+  } else {
+    $job->{status} = $job->{action}();
+    if (defined $job->{callback} && $job->{callback}) {
+      $job->{callback}($job->{status});
+    }
+  }
+}
+
+1;
+
+package Dependency;
+use strict;
+
+sub new
+{
+  my $class = shift;
+  my $required_by = shift;
+  my $requires = shift;
+  my $strong = shift;
+
+  if (defined $strong && ( $strong eq "false" || $strong eq "0" )) {
+    $strong = 0;
+  } else {
+    $strong = 1;
+  }
+
+  $required_by->requires($requires);
+
+  my $dep = bless {
+    requires_ => $requires,
+    required_by_ => $required_by,
+    strong_ => $strong,
+  } => $class;
+
+  return $dep;
+}
+
+sub id {
+  my $required_by;
+  my $requires;
+  if ((ref $_[0]) eq "Dependency") {
+    my $dep = shift;
+    $required_by = $dep->{required_by_}->host_id;
+    $requires = $dep->{requires_}->host_id;
+  } else {
+    $required_by = $_[0]->host_id;
+    $requires = $_[1]->host_id;
+  }
+  return $requires . " -> " . $required_by;
+}   
+sub requires { return $_[0]->{requires_}; }
+sub required_by { return $_[0]->{required_by_}; }
+sub strong { return $_[0]->{strong_}; }
+
+1;
+
+package XMLNode;
+use strict;
+
+sub new { return bless { a_ => $_[1] } => $_[0]; }
+sub name { return $_[0]->{a_}->[0]; }
+sub attr { return $_[0]->{a_}->[1]->[0]; }
+sub child {
+  my $res;
+  if ($_[1] < $_[0]->children) {
+    $res = new XMLNode([ $_[0]->{a_}->[1]->[1 + 2 * $_[1]], $_[0]->{a_}->[1]->[2 + 2 * $_[1]], $_[0], $_[1] ]);
+  }
+  return $res;
+}
+sub children {
+  my $c = @{$_[0]->{a_}->[1]};
+  my $n = ($c - 1) / 2;
+  if (!wantarray) { return $n; }
+  my @res;
+  for (my $i = 0; $i < $n; $i++) { push(@res, $_[0]->child($i)); };
+  return @res;
+}
+sub parent { return $_[0]->{a_}->[2]; }
+sub next { return $_[0]->parent->child($_[0]->{a_}->[3] + 1); }
+sub prev { return $_[0]->parent->child($_[0]->{a_}->[3] - 1); }
+sub text { return $_[0]->name eq "0" ? $_[0]->{a_}->[1] : ""; }
+
+1;
+
+=head1 NAME
+
+clinit - control daemon processes in cluster environment
+
+=head1 SYNOPSIS
+
+clinit [command] [options] [selector] ...
+
+=head1 ARGUMENTS
+
+All command-line arguments my come in any order. Each B<selector> is a colon separated
+pair host:service. Where each B<host> or B<service> can be an unique identifier, a wildcard
+or an empty string (in which case it is considered as '*').
+
+=head2 COMMANDS
+
+=over 4
+
+=item B<start>
+
+Start cluster services
+
+=item B<stop>
+
+Stop cluster services
+
+=item B<status>
+
+Query status of cluster services
+
+=item B<restart>
+
+Stop and then start selected and stopped services
+
+=item B<condrestart>
+
+Stop selected services and then start only stopped services
+
+=item B<list, ls>
+
+Display list of cluster services
+
+=item B<grouplist, gl>
+
+Display list of service groups
+
+=item B<tree>
+
+Display services dependency tree
+
+=item B<keyscan>
+
+Outputs the result of ssh-keyscan for selected hosts.
+
+=back
+
+=head2 OPTIONS
+
+All options require a command to be specified except for B<--help>.
+
+=over 4
+ 
+=item B<-S, --services=services.xml file>
+
+Change loaded services descriptor file (default is services.xml)
+
+=item B<-j, --jobs=jobs>
+
+Specifies the number of jobs (commands) to run simultaneously. Use -j0 to disable jobs. Default value -j8.
+
+=item B<--no-deps, --nodeps>
+
+Start only services selected by selectors, don't figure out dependencies.
+
+=item B<--force-deps>
+
+Check each service dependencies even if it is running.
+
+=item B<--selected-deps>
+
+Resolve dependencies in bounds of selected services.
+Command(s) will affect ONLY selected services. Dependencies determines services start/stop order.
+
+This switch is useful to gracefully stop or start services on specified host. Complete ignoring
+dependencies (--no-deps) may cause startup errors.
+
+=item B<--no-remote=HOST>
+
+Execute commands for specified host(s) locally.
+
+To disable remote execution on several hosts it is possible to use option multiple times or specify comma or space separated list:
+--no-remote=localhost --no-remote="local,127.0.0.1 myhost"
+
+=item B<-p, --probe-count=N>
+
+Sets probe count to N before probe procedure considered to be failed. Defaults to 10.
+--probe-count=0 disables probing procedure in which case action is considerd to be successful always.
+
+=item B<--probe-delay=N>
+
+Sets delay to N seconds between probe attempts. Default 3 sec.
+
+=item B<-n, --dry-run>
+
+Do not execute commands
+
+=item B<-l, --long-list>
+
+Print more information for *list commands
+
+=item B<-a, --all>
+
+Match hidden services and groups. Without this option hidden services and groups matched only it's full names.
+
+=item B<--no-colors, --nocolors>
+
+Disable colors in output.
+
+=item B<-v, --verbose> (incremental)
+
+Print verbose messages about running commands and other debugging information.
+
+=item B<-q, --quiet>
+
+Suppress all informational messages from startup system. Not affect B<list> and B<tree> commands.
+
+=item B<-h, --help>
+
+Print brief help message and exit.
+
+=back
+
+=head2 SELECTORS
+
+Command line parameters not matched any command or option and NOT started with '-' treat as selectors.
+Selector may include wildcards '*' and '?'.
+Each selector matched against hosts, groups and full service names and determines list of services, groups
+and hosts to apply command(s).
+Selectors with ':' symbol are parsed separately and have the special meaning - [host]:[service]. Both B<host>
+and B<service> parts is optional and replaced by '*' if omitted.
+
+Default selector is 'all' - services from group 'all' or all services if no such group in services.xml.
+
+Selector may be followed by '-' sign which turns it to NEGATIVE selector (exclusion) or '+' which is implied by default.
+ 
+=cut
