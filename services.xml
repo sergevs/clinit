@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+</services>
+<!--
+# A CONFIGURATION SAMPLE TO MANAGE 2 SERVICES (mariadb and httpd) ON localhost.
+# httpd will be started after mariadb and stopped before stopping mariadb
+# clinit tree   
+localhost:httpd───localhost:mariadb
+-->
+<!--
+<services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          effective_user="root"
+          effective_group="root"
+          ssh_key="/root/.ssh/id_rsa">
+
+   <service id="mariadb" host="localhost"
+            start="service mariadb start &gt; /dev/null"
+            stop="service mariadb  stop &gt; /dev/null"
+            status="service mariadb status &gt; /dev/null">
+   </service>
+
+   <service id="httpd" host="localhost"
+            start="service httpd start &gt; /dev/null"
+            stop="service httpd  stop &gt; /dev/null"
+            status="service httpd status &gt; /dev/null">
+
+        <requires id="mariadb" host="localhost" strong="true"/> 
+   </service>
+
+</services>
+-->
