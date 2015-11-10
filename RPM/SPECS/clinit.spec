@@ -33,7 +33,7 @@ The syntax of clinit configuration file is pretty simple and sysadmin freindly.
 %defattr(-,root,root)
 %_bindir/*
 %dir /etc/%name
-/etc/%name/*
+%config(noreplace) /etc/%name/services.xml
 %doc AUTHORS
 
 %changelog
