@@ -1,0 +1,2 @@
+clinit usr/bin
+services.xml etc/clinit

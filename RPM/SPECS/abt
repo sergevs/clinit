@@ -1,0 +1,4 @@
+pkgName='clinit'
+specFile='RPM/SPECS/clinit.spec'
+vcsModules[$vcsModule]=$modBuild
+distCheckout='True'
