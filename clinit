@@ -830,7 +830,7 @@ sub new
   my $term = $ENV{TERM} || "";
 
   my $opt = {
-    services_xml => dirname($0) . "/services.xml",
+    services_xml => (defined($ENV{CLINIT_CONFIG})?"$ENV{CLINIT_CONFIG}":"/etc/clinit/services.xml"),
     jobs => 8,
     verbose => 1,
     match_hidden => 0,
@@ -940,7 +940,7 @@ sub new
     exit $env->result;
   }
 
-  if ($priveleged_command && !$env->dry_run) {
+  if ($priveleged_command && defined($svcs->effective_user) && !$env->dry_run) {
     my $effective_user = $svcs->effective_user;
     my @eui = getpwnam($effective_user);
     if (@eui == 0) {
@@ -1581,6 +1581,12 @@ Display services dependency tree
 Outputs the result of ssh-keyscan for selected hosts.
 
 =back
+
+=head2 DEFAULT CONFIGURATION FILE AND ENVIRONMENT VARIABLES
+
+The default configuration is /etc/clinit/services.xml
+
+CLINIT_CONFIG environment variable can be used to override the location of the default configuration file.
 
 =head2 OPTIONS
 
