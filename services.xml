@@ -28,5 +28,13 @@ localhost:httpd───localhost:mariadb
         <requires id="mariadb" host="localhost" strong="true"/> 
    </service>
 
+   <group name="httpd">
+    <service id="httpd" host="localhost"/>
+   </group>
+
+   <group name="mariadb">
+    <service id="mariadb" host="localhost"/>
+   </group>
+
 </services>
 -->
