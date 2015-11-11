@@ -1,0 +1,42 @@
+The services.xml defines clinit configuration file for a real 4 hosts(hat0-hat3) cloudera hadoop cluster.
+
+Sample commands:
+
+$ clinit tree
+hat0:hadoop-mapreduce-historyserver───hat0:yarn-resourcemanager
+hat0:hue─┬─hat0:hbase-thrift───hat0:hbase-master─┬─hat0:hdfs-namenode
+         │                                       └─hat0:zookeeper-server
+         ├─hat0:hdfs-namenode
+         ├─hat0:hive-server2─┬─hat0:hdfs-namenode
+         │                   ├─hat0:hive-metastore───hat0:mysql-meta
+         │                   └─hat0:yarn-resourcemanager
+         ├─hat0:oozie───hat0:mysql-meta
+         └─hat1:impala-server─┬─hat0:hdfs-namenode
+                              └─hat0:impala-state-store
+hat0:impala-catalog─┬─hat0:hive-metastore───hat0:mysql-meta
+                    └─hat0:impala-state-store
+hat0:solr-server─┬─hat0:hdfs-namenode
+                 └─hat0:zookeeper-server
+hat1:hbase-regionserver───hat0:hbase-master─┬─hat0:hdfs-namenode
+                                            └─hat0:zookeeper-server
+hat1:hdfs-datanode───hat0:hdfs-namenode
+hat1:yarn-nodemanager───hat0:yarn-resourcemanager
+hat2:hdfs-datanode───hat0:hdfs-namenode
+hat2:impala-server─┬─hat0:hdfs-namenode
+                   └─hat0:impala-state-store
+hat2:yarn-nodemanager───hat0:yarn-resourcemanager
+hat3:hdfs-datanode───hat0:hdfs-namenode
+hat3:impala-server─┬─hat0:hdfs-namenode
+                   └─hat0:impala-state-store
+hat3:yarn-nodemanager───hat0:yarn-resourcemanager
+
+$ clinit status hadoop
+hat0:hdfs-namenode                  is started
+hat0:hadoop-mapreduce-historyserver is started
+hat0:yarn-resourcemanager           is started
+hat1:yarn-nodemanager               is started
+hat2:yarn-nodemanager               is started
+hat1:hdfs-datanode                  is started
+hat3:hdfs-datanode                  is started
+hat3:yarn-nodemanager               is started
+hat2:hdfs-datanode                  is started

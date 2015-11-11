@@ -1,0 +1,215 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<!--
+  Cloudera hadoop cluster configuration for clinit cluster manager.
+  The cluster consists of 4 hosts: hat0, hat1, hat2, hat3.
+-->
+
+<services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+
+   <service id="hdfs-namenode" host="hat0"
+            start="/etc/init.d/hadoop-hdfs-namenode start &gt; /dev/null"
+            stop="/etc/init.d/hadoop-hdfs-namenode stop &gt; /dev/null"
+            status="/etc/init.d/hadoop-hdfs-namenode status &gt; /dev/null">
+   </service>
+
+   <service id="hdfs-datanode" host="hat1"
+            start="/etc/init.d/hadoop-hdfs-datanode start &gt; /dev/null"
+            stop="/etc/init.d/hadoop-hdfs-datanode stop &gt; /dev/null"
+            status="/etc/init.d/hadoop-hdfs-datanode status &gt; /dev/null">
+   	<requires id="hdfs-namenode" host="hat0" strong="true"/>
+   </service>
+
+   <service id="hdfs-datanode" host="hat2"
+            start="/etc/init.d/hadoop-hdfs-datanode start &gt; /dev/null"
+            stop="/etc/init.d/hadoop-hdfs-datanode stop &gt; /dev/null"
+            status="/etc/init.d/hadoop-hdfs-datanode status &gt; /dev/null">
+   	<requires id="hdfs-namenode" host="hat0" strong="true"/>
+   </service>
+
+   <service id="hdfs-datanode" host="hat3"
+            start="/etc/init.d/hadoop-hdfs-datanode start &gt; /dev/null"
+            stop="/etc/init.d/hadoop-hdfs-datanode stop &gt; /dev/null"
+            status="/etc/init.d/hadoop-hdfs-datanode status &gt; /dev/null">
+   	<requires id="hdfs-namenode" host="hat0" strong="true"/>
+   </service>
+
+   <service id="yarn-resourcemanager" host="hat0"
+            start="/etc/init.d/hadoop-yarn-resourcemanager start &gt; /dev/null"
+            stop="/etc/init.d/hadoop-yarn-resourcemanager stop &gt; /dev/null"
+            status="/etc/init.d/hadoop-yarn-resourcemanager status &gt; /dev/null">
+   </service>
+
+   <service id="hadoop-mapreduce-historyserver" host="hat0"
+            start="/etc/init.d/hadoop-mapreduce-historyserver start &gt; /dev/null"
+            stop="/etc/init.d/hadoop-mapreduce-historyserver stop &gt; /dev/null"
+            status="/etc/init.d/hadoop-mapreduce-historyserver status &gt; /dev/null">
+   	<requires id="yarn-resourcemanager" host="hat0" strong="true"/>
+   </service>
+
+   <service id="yarn-nodemanager" host="hat1"
+            start="/etc/init.d/hadoop-yarn-nodemanager start &gt; /dev/null"
+            stop="/etc/init.d/hadoop-yarn-nodemanager stop &gt; /dev/null"
+            status="/etc/init.d/hadoop-yarn-nodemanager status &gt; /dev/null">
+   	<requires id="yarn-resourcemanager" host="hat0" strong="true"/>
+   </service>
+
+   <service id="yarn-nodemanager" host="hat2"
+            start="/etc/init.d/hadoop-yarn-nodemanager start &gt; /dev/null"
+            stop="/etc/init.d/hadoop-yarn-nodemanager stop &gt; /dev/null"
+            status="/etc/init.d/hadoop-yarn-nodemanager status &gt; /dev/null">
+   	<requires id="yarn-resourcemanager" host="hat0" strong="true"/>
+   </service>
+
+   <service id="yarn-nodemanager" host="hat3"
+            start="/etc/init.d/hadoop-yarn-nodemanager start &gt; /dev/null"
+            stop="/etc/init.d/hadoop-yarn-nodemanager stop &gt; /dev/null"
+            status="/etc/init.d/hadoop-yarn-nodemanager status &gt; /dev/null">
+   	<requires id="yarn-resourcemanager" host="hat0" strong="true"/>
+   </service>
+
+   <service id="mysql-meta" host="hat0"
+            start="/etc/init.d/mysqld start &gt; /dev/null"
+            stop="/etc/init.d/mysqld stop &gt; /dev/null"
+            status="/etc/init.d/mysqld status &gt; /dev/null">
+   </service>
+
+   <service id="hive-metastore" host="hat0"
+            start="/etc/init.d/hive-metastore start &gt; /dev/null"
+            stop="/etc/init.d/hive-metastore stop &gt; /dev/null"
+            status="/etc/init.d/hive-metastore status &gt; /dev/null">
+   	<requires id="mysql-meta" host="hat0" strong="true"/>
+   </service>
+
+   <service id="hive-server2" host="hat0"
+            start="/etc/init.d/hive-server2 start &gt; /dev/null"
+            stop="/etc/init.d/hive-server2 stop &gt; /dev/null"
+            status="/etc/init.d/hive-server2 status &gt; /dev/null">
+   	<requires id="hive-metastore" host="hat0" strong="true"/>
+   	<requires id="yarn-resourcemanager" host="hat0" strong="true"/>
+   	<requires id="hdfs-namenode" host="hat0" strong="true"/>
+   </service>
+
+   <service id="impala-state-store" host="hat0"
+            start="/etc/init.d/impala-state-store start &gt; /dev/null"
+            stop="/etc/init.d/impala-state-store stop &gt; /dev/null"
+            status="/etc/init.d/impala-state-store status &gt; /dev/null">
+   </service>
+
+   <service id="impala-catalog" host="hat0"
+            start="/etc/init.d/impala-catalog start &gt; /dev/null"
+            stop="/etc/init.d/impala-catalog stop &gt; /dev/null"
+            status="/etc/init.d/impala-catalog status &gt; /dev/null">
+   	<requires id="impala-state-store" host="hat0" strong="true"/>
+   	<requires id="hive-metastore" host="hat0" strong="true"/>
+   </service>
+
+   <service id="impala-server" host="hat1"
+            start="/etc/init.d/impala-server start &gt; /dev/null"
+            stop="/etc/init.d/impala-server stop &gt; /dev/null"
+            status="/etc/init.d/impala-server status &gt; /dev/null">
+   	<requires id="impala-state-store" host="hat0" strong="true"/>
+   	<requires id="hdfs-namenode" host="hat0" strong="true"/>
+   </service>
+
+   <service id="impala-server" host="hat2"
+            start="/etc/init.d/impala-server start &gt; /dev/null"
+            stop="/etc/init.d/impala-server stop &gt; /dev/null"
+            status="/etc/init.d/impala-server status &gt; /dev/null">
+   	<requires id="impala-state-store" host="hat0" strong="true"/>
+   	<requires id="hdfs-namenode" host="hat0" strong="true"/>
+   </service>
+
+   <service id="impala-server" host="hat3"
+            start="/etc/init.d/impala-server start &gt; /dev/null"
+            stop="/etc/init.d/impala-server stop &gt; /dev/null"
+            status="/etc/init.d/impala-server status &gt; /dev/null">
+   	<requires id="impala-state-store" host="hat0" strong="true"/>
+   	<requires id="hdfs-namenode" host="hat0" strong="true"/>
+   </service>
+
+   <service id="zookeeper-server" host="hat0"
+            start="/etc/init.d/zookeeper-server start &gt; /dev/null 2&gt; /dev/null"
+            stop="/etc/init.d/zookeeper-server stop &gt; /dev/null 2&gt; /dev/nul"
+            status="/etc/init.d/zookeeper-server status &gt; /dev/null">
+   </service>
+
+   <service id="oozie" host="hat0"
+            start="/etc/init.d/oozie start &gt; /dev/null"
+            stop="/etc/init.d/oozie stop &gt; /dev/null"
+            status="/etc/init.d/oozie status &gt; /dev/null">
+   	<requires id="mysql-meta" host="hat0" strong="true"/>
+   </service>
+
+   <service id="hue" host="hat0"
+            start="/etc/init.d/hue start &gt; /dev/null"
+            stop="/etc/init.d/hue stop &gt; /dev/null"
+            status="/etc/init.d/hue status &gt; /dev/null">
+   	<requires id="hdfs-namenode" host="hat0" strong="true"/>
+   	<requires id="oozie" host="hat0" strong="true"/>
+   	<requires id="hive-server2" host="hat0" strong="true"/>
+   	<requires id="hbase-thrift" host="hat0" strong="true"/>
+   	<requires id="impala-server" host="hat1" strong="true"/>
+   </service>
+
+   <service id="hbase-master" host="hat0"
+            start="/etc/init.d/hbase-master start &gt; /dev/null"
+            stop="/etc/init.d/hbase-master stop &gt; /dev/null"
+            status="/etc/init.d/hbase-master status &gt; /dev/null">
+   	<requires id="hdfs-namenode" host="hat0" strong="true"/>
+   	<requires id="zookeeper-server" host="hat0" strong="true"/>
+   </service>
+
+   <service id="hbase-thrift" host="hat0"
+            start="/etc/init.d/hbase-thrift start &gt; /dev/null"
+            stop="/etc/init.d/hbase-thrift stop &gt; /dev/null"
+            status="/etc/init.d/hbase-thrift status &gt; /dev/null">
+   	<requires id="hbase-master" host="hat0" strong="true"/>
+   </service>
+
+   <service id="hbase-regionserver" host="hat1"
+            start="/etc/init.d/hbase-regionserver start &gt; /dev/null"
+            stop="/etc/init.d/hbase-regionserver stop &gt; /dev/null"
+            status="/etc/init.d/hbase-regionserver status &gt; /dev/null">
+   	<requires id="hbase-master" host="hat0" strong="true"/>
+   </service>
+
+   <service id="solr-server" host="hat0"
+            start="/etc/init.d/solr-server start &gt; /dev/null"
+            stop="/etc/init.d/solr-server stop &gt; /dev/null"
+            status="/etc/init.d/solr-server status &gt; /dev/null">
+   	<requires id="hdfs-namenode" host="hat0" strong="true"/>
+   	<requires id="zookeeper-server" host="hat0" strong="true"/>
+   </service>
+
+   <group name="hadoop">
+      <service id="hdfs-namenode" host="hat0"/>
+      <service id="hdfs-datanode" host="hat1"/>
+      <service id="hdfs-datanode" host="hat2"/>
+      <service id="hdfs-datanode" host="hat3"/>
+
+      <service id="yarn-resourcemanager" host="hat0"/>
+      <service id="hadoop-mapreduce-historyserver" host="hat0"/>
+
+      <service id="yarn-nodemanager" host="hat1"/>
+      <service id="yarn-nodemanager" host="hat2"/>
+      <service id="yarn-nodemanager" host="hat3"/>
+
+   </group>
+
+   <group name="impala">
+      <service id="impala-state-store" host="hat0"/>
+      <service id="impala-catalog" host="hat0"/>
+
+      <service id="impala-server" host="hat1"/>
+      <service id="impala-server" host="hat2"/>
+      <service id="impala-server" host="hat3"/>
+   </group>
+
+   <group name="hbase">
+       <service id="hbase-master" host="hat0"/>
+       <service id="hbase-thrift" host="hat0"/>
+       <service id="hbase-regionserver" host="hat1"/>
+   </group>
+
+</services>
