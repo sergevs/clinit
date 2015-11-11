@@ -34,7 +34,7 @@ The syntax of clinit configuration file is pretty simple and sysadmin freindly.
 %_bindir/*
 %dir /etc/%name
 %config(noreplace) /etc/%name/services.xml
-%doc AUTHORS
+%doc AUTHORS sample
 
 %changelog
 * Mon Nov 09 2015 Serge <abrikus@gmail.com> 1.0-ssv1
