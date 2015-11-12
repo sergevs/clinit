@@ -1584,9 +1584,11 @@ Outputs the result of ssh-keyscan for selected hosts.
 
 =head2 DEFAULT CONFIGURATION FILE AND ENVIRONMENT VARIABLES
 
-The default configuration is /etc/clinit/services.xml
+The default configuration is B</etc/clinit/services.xml>
 
-CLINIT_CONFIG environment variable can be used to override the location of the default configuration file.
+B<CLINIT_CONFIG> environment variable can be used to override the location of the default configuration file.
+
+See configuration file syntax below.
 
 =head2 OPTIONS
 
@@ -1676,5 +1678,89 @@ and B<service> parts is optional and replaced by '*' if omitted.
 Default selector is 'all' - services from group 'all' or all services if no such group in services.xml.
 
 Selector may be followed by '-' sign which turns it to NEGATIVE selector (exclusion) or '+' which is implied by default.
+
+=head2 CONFIGURATION FILE
+
+The configuration is a generic XML. The required configuration must be enclosed in the B<services> element.
+Here is a sample:
+
+      <?xml version="1.0" encoding="utf-8"?>
+
+      <services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                effective_user="root"
+                effective_group="root"
+                ssh_key="/root/.ssh/id_rsa">
+       
+         <service id="mariadb" host="localhost"
+                  start="service mariadb start"
+                  stop="service mariadb  stop"
+                  status="service mariadb status">
+         </service>
+
+         <service id="httpd" host="localhost"
+                  start="service httpd start"
+                  stop="service httpd  stop"
+                  status="service httpd status">
+
+              <requires id="mariadb" host="localhost" strong="true"/> 
+         </service>
+
+        <group name="httpd">
+          <service id="httpd" host="localhost"/>
+        </group>
+
+        <group name="mariadb">
+          <service id="mariadb" host="localhost"/>
+        </group>
+
+      </services>
  
+=head2 CONFIGURATION FILE SYNTAX DESCRIPTION
+
+B<services> element has optional attributes:
+
+=over 6
+
+=item B<effective_user> , B<effective_group>
+
+Defines a user account and group to perform all operation. B<sudo> is used to impersonate to the required account. 
+
+=item B<ssh_key>
+ 
+Path to B<ssh> private key to access hosts.
+
+=back
+
+A service defined by B<service> element.
+
+B<service> element must have attributes:
+
+=over 6
+
+=item B<id>
+
+The service identifier, will be shown in all output.
+
+=item B<host>
+
+The host to execute commands.
+
+=item B<stop>, B<start>, B<status>
+
+Define commands to start, stop and get the status of a service 
+
+=back
+
+B<requires> is optional element to define dependency to other B<service> referenced by B<id> and B<host> attributes.
+
+B<strong> attribute defines whether service can start if dependent on service failed. If B<strong>=B<"true"> the service will not try to start.
+
+=over 6
+
+=item B<group> is optional element.
+
+B<group> defines a list of services. The group B<name> attribute can be used as argument for B<clinit> commands.
+
+=back
+
 =cut

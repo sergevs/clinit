@@ -27,14 +27,16 @@ The syntax of clinit configuration file is pretty simple and sysadmin freindly.
 %__mkdir_p %buildroot/etc/%name
 %__install %name %buildroot%_bindir
 %__install services.xml %buildroot/etc/%name
-
+%__mkdir_p %buildroot%_mandir/man1
+pod2man -s 1 -c %name -n %name %name -r %version > %buildroot%_mandir/man1/%name.1
 
 %files
 %defattr(-,root,root)
 %_bindir/*
 %dir /etc/%name
 %config(noreplace) /etc/%name/services.xml
-%doc AUTHORS sample
+%_mandir/man1/*
+%doc AUTHORS example
 
 %changelog
 * Mon Nov 09 2015 Serge <abrikus@gmail.com> 1.0-ssv1

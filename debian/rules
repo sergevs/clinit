@@ -1,4 +1,9 @@
 #!/usr/bin/make -f
 
+#export DH_VERBOSE=1
 %:
 	dh $@
+
+override_dh_auto_build:
+	pod2man -s 1 -c 'clinit' -n clinit clinit -r 1.0 > debian/clinit.1
+	dh_auto_build
