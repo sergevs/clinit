@@ -40,3 +40,4 @@ hat1:hdfs-datanode                  is started
 hat3:hdfs-datanode                  is started
 hat3:yarn-nodemanager               is started
 hat2:hdfs-datanode                  is started
+...
