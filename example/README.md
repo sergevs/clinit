@@ -1,4 +1,4 @@
-The <A HREF=example>services.xml</A> defines clinit configuration file for a real 4 hosts(hat0-hat3) cloudera hadoop cluster.
+The <A HREF=services.xml>services.xml</A> defines clinit configuration file for a real 4 hosts(hat0-hat3) cloudera hadoop cluster.
 
 Sample commands:
 ```
