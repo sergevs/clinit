@@ -1,7 +1,7 @@
 The <A HREF=example>services.xml</A> defines clinit configuration file for a real 4 hosts(hat0-hat3) cloudera hadoop cluster.
 
 Sample commands:
-
+{{{
 $ clinit tree
 hat0:hadoop-mapreduce-historyserver───hat0:yarn-resourcemanager
 hat0:hue─┬─hat0:hbase-thrift───hat0:hbase-master─┬─hat0:hdfs-namenode
@@ -41,3 +41,4 @@ hat3:hdfs-datanode                  is started
 hat3:yarn-nodemanager               is started
 hat2:hdfs-datanode                  is started
 ...
+}}}
