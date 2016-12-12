@@ -419,7 +419,7 @@ sub check_status
   $env->log(3, 'checking status of ' . $svc->host_id);
   if ($svc->status_command) {
     $env->job( sub {
-      return $env->remote_exec($svc->host, $svc->status_command);
+      return $env->remote_exec($svc->host, $svc->status_command, $svc);
     }, sub {
       my $exit_code = shift;
       if ($env->dry_run) {
@@ -547,7 +547,7 @@ sub go
   $svc->last_status($go->{trn_status});
   push(@{$svc->{wait_callbacks_}}, $callback);
   $env->job( sub {
-    return $env->remote_exec($svc->host, $svc->{$cmd."_command_"});
+    return $env->remote_exec($svc->host, $svc->{$cmd."_command_"}, $svc);
   }, sub {
     my $exit_code = shift;
     if ($exit_code != 0) {
@@ -845,6 +845,7 @@ sub new
     probe_delay => 3,
     colors => ($term =~ m/^(xterm|screen|cygwin|rxvt)/ ? 1 : 0),
     no_remote => [""],
+    sudo => 0,
     help => 0,
   };
 
@@ -866,6 +867,7 @@ sub new
     'probe-delay=i'   => \$opt->{probe_delay},
     'jobs|j=i'        => \$opt->{jobs},
     'colors!'         => \$opt->{colors},
+    'sudo|U'          => \$opt->{sudo},
     'help|h'          => \$opt->{help},
   );
   @{$opt->{no_remote}} = split (/ |,/, join(',', @{$opt->{no_remote}}));
@@ -940,7 +942,7 @@ sub new
     exit $env->result;
   }
 
-  if ($priveleged_command && defined($svcs->effective_user) && !$env->dry_run) {
+  if ($priveleged_command && defined($svcs->effective_user) && !$env->dry_run && $opt->{sudo}) {
     my $effective_user = $svcs->effective_user;
     my @eui = getpwnam($effective_user);
     if (@eui == 0) {
@@ -1242,6 +1244,7 @@ sub remote_exec
   my $env = shift;
   my $host = shift;
   my $command = shift;
+  my $svc = shift;
 
   if ($env->no_remote($host)) {
     my $res = $env->exec($command);
@@ -1251,7 +1254,12 @@ sub remote_exec
 
     return $status;
   }
-  my @args = ('/usr/bin/ssh', @{$env->{ssh_opt_}}, $host, $command);
+  my @ssh_opt = (@{$env->{ssh_opt_}});
+
+  if (defined($svc) && defined($svc->user)) {
+    push(@ssh_opt, '-l', $svc->user);
+  }
+  my @args = ('/usr/bin/ssh', @ssh_opt, $host, $command);
   my $res = $env->exec(@args);
   my $status = $res >> 8;
 
@@ -1635,6 +1643,10 @@ Sets probe count to N before probe procedure considered to be failed. Defaults t
 =item B<--probe-delay=N>
 
 Sets delay to N seconds between probe attempts. Default 3 sec.
+
+=item B<-U --sudo>
+
+Use sudo to effective user before executing ssh commands.
 
 =item B<-n, --dry-run>
 
