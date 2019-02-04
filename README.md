@@ -3,4 +3,8 @@ It does not require any agents on cluster nodes but relays on ssh as the transpo
 Also it's able to visualize the services dependencies tree in a convenient way to show the overall cluster picture.
 The syntax of clinit configuration file is pretty simple and sysadmin friendly.
 
-See also <A HREF=example>example</A>
+See also:
+
+<A HREF=../../wiki>manual</A>
+
+<A HREF=example>example</A>
